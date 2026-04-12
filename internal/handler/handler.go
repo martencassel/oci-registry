@@ -1,12 +1,12 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 
-	uuid "github.com/google/uuid"
 	config "github.com/martencassel/oci-registry/internal/config"
 	"github.com/martencassel/oci-registry/internal/oci"
 	"github.com/martencassel/oci-registry/internal/store"
@@ -68,6 +68,8 @@ func (h *OCIRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleBlobHead(w, r, meta, cfg)
 	case oci.KindManifestHead:
 		h.handleManifestHead(w, r, meta, cfg)
+	case oci.KindManifestPut:
+		h.handleManifestPut(w, r, meta, cfg)
 	default:
 		http.Error(w, fmt.Sprintf("unsupported request kind: %s", meta.Kind), http.StatusNotImplemented)
 	}
@@ -98,6 +100,29 @@ func (h *OCIRegistryHandler) handleManifestHead(w http.ResponseWriter, r *http.R
 	oci.WriteError(w, ociErr)
 }
 
+// POST /v2/oci-local/alpine/blobs/uploads/
+// or
+// POST /v2/oci-local/alpine/blobs/uploads/{uuid}
+func (h *OCIRegistryHandler) handleCreateBlobUpload(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
+	id, err := h.Uploads.CreateUploadSession(meta.RepoKey)
+	if err != nil {
+		log.Errorf("Failed to create upload session: %v", err)
+		http.Error(w, "failed to create upload session", http.StatusInternalServerError)
+		return
+	}
+	log.Infof("Created blob upload session with ID: %s", id)
+	log.Infof("Created blob upload session for repoKey: %s, uploadUUID: %s", meta.RepoKey, id)
+	// Accepted
+	w.WriteHeader(http.StatusAccepted)
+	// Location: /v2/oci-local/alpine/blobs/uploads/{uuid}
+	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/uploads/%s", meta.RepoKey, id))
+	// Docker-Upload-UUID: {uuid}
+	w.Header().Set("Docker-Upload-UUID", id)
+	// Docker-Distribution-API-Version: registry/2.0
+	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+
+}
+
 // POST http://localhost:8080/v2/oci-local/alpine/blobs/uploads/
 func (h *OCIRegistryHandler) handleBlobUploadPost(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
 	if meta.UploadUUID == "" {
@@ -106,6 +131,7 @@ func (h *OCIRegistryHandler) handleBlobUploadPost(w http.ResponseWriter, r *http
 	}
 	id := meta.UploadUUID
 	log.Infof("Received blob upload POST for repoKey: %s, uploadUUID: %s", meta.RepoKey, id)
+
 	// For now, just return 202 Accepted with Location header pointing to the upload URL
 	w.WriteHeader(http.StatusAccepted)
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/uploads/%s", meta.RepoKey, id))
@@ -113,43 +139,24 @@ func (h *OCIRegistryHandler) handleBlobUploadPost(w http.ResponseWriter, r *http
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 }
 
-// POST /v2/oci-local/alpine/blobs/uploads/
-// or
-// POST /v2/oci-local/alpine/blobs/uploads/{uuid}
-func (h *OCIRegistryHandler) handleCreateBlobUpload(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
-	uploadUUID := uuid.New().String()
-	err := os.MkdirAll("/tmp/oci-registry", 0755)
-	if err != nil {
-		log.Errorf("Failed to create temp directory: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	uploadPath := fmt.Sprintf("/tmp/oci-registry/%s", uploadUUID)
-	// Create an empty file to represent the upload session
-	f, err := os.Create(uploadPath)
-	if err != nil {
-		log.Errorf("Failed to create upload file: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	f.Close()
-	log.Infof("Created blob upload session for repoKey: %s, uploadUUID: %s", meta.RepoKey, uploadUUID)
-	// Accepted
-	w.WriteHeader(http.StatusAccepted)
-	// Location: /v2/oci-local/alpine/blobs/uploads/{uuid}
-	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/uploads/%s", meta.RepoKey, uploadUUID))
-	// Docker-Upload-UUID: {uuid}
-	w.Header().Set("Docker-Upload-UUID", uploadUUID)
-	// Docker-Distribution-API-Version: registry/2.0
-	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-
+func SummarizeBinary(body []byte) string {
+	h := sha256.Sum256(body)
+	return fmt.Sprintf("<binary %d bytes, sha256=%s>", len(body), hex.EncodeToString(h[:]))
 }
 
 func (h *OCIRegistryHandler) handleBlobUploadPatch(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
 	id := meta.UploadUUID
 	log.Infof("Received blob upload PATCH for repoKey: %s, uploadUUID: %s", meta.RepoKey, id)
+
+	err := h.Uploads.WriteChunk(id, r.Body)
+	if err != nil {
+		log.Errorf("Failed to write chunk to upload session: %v", err)
+		http.Error(w, "failed to write chunk to upload session", http.StatusInternalServerError)
+		return
+	}
+
 	// For now, just return 202 Accepted with Location header pointing to the upload URL
-	w.WriteHeader(http.StatusAccepted)
+	w.WriteHeader(http.StatusCreated)
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/uploads/%s", meta.RepoKey, id))
 	w.Header().Set("Docker-Upload-UUID", id)
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
@@ -157,11 +164,23 @@ func (h *OCIRegistryHandler) handleBlobUploadPatch(w http.ResponseWriter, r *htt
 
 func (h *OCIRegistryHandler) handleBlobUploadPut(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
 	id := meta.UploadUUID
-	digest := meta.Query.Get("digest")
-	log.Infof("Received blob upload PUT for repoKey: %s, uploadUUID: %s, digest: %s", meta.RepoKey, id, digest)
+	digestQuery := r.URL.Query().Get("digest")
+	log.Infof("Received blob upload PUT for repoKey: %s, uploadUUID: %s, digest: %s", meta.RepoKey, id, digestQuery)
+	err := h.Uploads.FinalizeUploadSession(id, digestQuery)
+	if err != nil {
+		log.Errorf("Failed to finalize upload session: %v", err)
+		http.Error(w, "failed to finalize upload session", http.StatusInternalServerError)
+		return
+	}
+	err = h.Uploads.WriteChunk(id, r.Body)
+	if err != nil {
+		log.Errorf("Failed to write chunk to upload session: %v", err)
+		http.Error(w, "failed to write chunk to upload session", http.StatusInternalServerError)
+		return
+	}
 	// For now, just return 201 Created with Location header pointing to the blob URL
 	w.WriteHeader(http.StatusCreated)
-	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/%s", meta.RepoKey, digest))
+	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/%s", meta.RepoKey, digestQuery))
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 }
 

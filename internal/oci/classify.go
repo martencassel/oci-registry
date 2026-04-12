@@ -54,6 +54,9 @@ type ResponseMeta struct {
 func kindFromVerb(method string, meta ParseResult) Kind {
 	switch meta.Verb {
 	case VerbBlobs:
+		if method == http.MethodPut && meta.SubVerb == "uploads" {
+			return KindBlobUploadPut
+		}
 		if meta.SubVerb == "uploads" {
 			return KindBlobUploadPost
 		}

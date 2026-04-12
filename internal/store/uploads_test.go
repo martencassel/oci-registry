@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"testing"
 
@@ -38,7 +40,8 @@ func TestUploads(t *testing.T) {
 
 	// Write chunk
 	chunkData := []byte("test chunk data")
-	err = uploads.WriteChunk(uploadID, chunkData)
+	br := io.NopCloser(bytes.NewReader(chunkData))
+	err = uploads.WriteChunk(uploadID, br)
 	if err != nil {
 		t.Fatalf("WriteChunk failed: %v", err)
 	}

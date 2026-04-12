@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -27,7 +28,7 @@ func (u *Uploads) CreateUploadSession(repoKey string) (string, error) {
 	uploadID := uuid.New().String()
 	// Create a file to represent the upload session
 	uploadPath := fmt.Sprintf("%s/%s", u.BasePath, uploadID)
-	if err := os.MkdirAll(u.BasePath, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(uploadPath), 0755); err != nil {
 		return "", err
 	}
 
@@ -40,15 +41,18 @@ func (u *Uploads) CreateUploadSession(repoKey string) (string, error) {
 }
 
 // WriteChunk writes a chunk of data to the upload session file
-func (u *Uploads) WriteChunk(uploadID string, data []byte) error {
+func (u *Uploads) WriteChunk(uploadID string, r io.Reader) error {
 	uploadPath := fmt.Sprintf("%s/%s", u.BasePath, uploadID)
+	if err := os.MkdirAll(filepath.Dir(uploadPath), 0755); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(uploadPath, os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	_, err = f.Write(data)
+	_, err = io.Copy(f, r)
 	return err
 }
 
@@ -67,12 +71,10 @@ func (u *Uploads) DeleteUploadSession(uploadID string) error {
 
 func (u *Uploads) FinalizeUploadSession(uploadID string, dgst string) error {
 	uploadPath := fmt.Sprintf("%s/%s", u.BasePath, uploadID)
-
 	// Check if the upload session exists
 	if _, err := os.Stat(uploadPath); os.IsNotExist(err) {
 		return fmt.Errorf("upload session not found")
 	}
-
 	// Move the uploaded file to the blob store with the correct digest
 	blobPath := u.Blobs.BlobPath(digest.Digest(dgst))
 	err := os.MkdirAll(filepath.Dir(blobPath), 0755)
