@@ -55,25 +55,73 @@ func (h *OCIRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Infof("Received request for repoKey: %s, remainder: %s", repoKey, remainder)
 
 	// 2. Classify request BEFORE rewriting
-	meta := oci.ClassifyRequest(r.Method, r.URL.Path)
+	log.Infof("Classifying request for method: %s, path: %s", r.Method, r.URL.Path)
+	meta := oci.ClassifyRequest(r.Method, r.URL.Path, r)
+	log.Infof("Classified request as kind: %s", meta.Kind.String())
 
 	switch meta.Kind {
-	case oci.KindBlobUploadPost:
-		h.handleBlobUploadPost(w, r, meta, cfg)
-	case oci.KindBlobUploadPatch:
-		h.handleBlobUploadPatch(w, r, meta, cfg)
-	case oci.KindBlobUploadPut:
-		h.handleBlobUploadPut(w, r, meta, cfg)
-	case oci.KindBlobHead:
+	case oci.KindPing:
+		h.handlePing(w, r, meta)
+		return
+	//
+	// GET / HEAD /v2/<repoKey>/<name>/blobs/<digest>
+	//
+	case oci.KindDownloadBlob:
+		h.handleDownloadBlob(w, r, meta, cfg)
+		return
+	case oci.KindCheckBlobExists:
 		h.handleBlobHead(w, r, meta, cfg)
-	case oci.KindManifestHead:
+		return
+	//
+	// GET / HEAD /v2/<repoKey>/<name>/manifests/<reference>
+	//
+	case oci.KindGetManifest:
+		h.handleGetManifest(w, r, meta, cfg)
+		return
+	case oci.KindCheckManifestExists:
 		h.handleManifestHead(w, r, meta, cfg)
-	case oci.KindManifestPut:
+		return
+
+	//
+	// POST /v2/<repoKey>/<name>/blobs/uploads/
+	// POST /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>
+	// POST /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>?digest=<digest>
+	//
+	case oci.KindStartBlobUpload:
+		h.handleBlobUploadPost(w, r, meta, cfg)
+		return
+	//
+	// PATCH /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>
+	//
+	case oci.KindUploadBlobChunk:
+		h.handleBlobUploadPatch(w, r, meta, cfg)
+		return
+	//
+	// PUT /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>?digest=<digest>
+	// PUT /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>
+	//
+	case oci.KindCompleteBlobUpload:
+		h.handleBlobUploadPut(w, r, meta, cfg)
+		return
+	//
+	// PUT /v2/<repoKey>/<name>/manifests/<reference>
+	//
+	case oci.KindUploadManifest:
 		h.handleManifestPut(w, r, meta, cfg)
+		return
 	default:
-		http.Error(w, fmt.Sprintf("unsupported request kind: %s", meta.Kind), http.StatusNotImplemented)
+		http.Error(w, fmt.Sprintf("unsupported request kind: %s for %s", meta.Kind, r.URL.Path), http.StatusNotImplemented)
 	}
 
+}
+
+// handleDownloadBlob
+func (h *OCIRegistryHandler) handleDownloadBlob(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
+	var err oci.OCIError
+	err = oci.ErrBlobNotFound
+	ociErr := oci.ToOCI(err)
+	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+	oci.WriteError(w, ociErr)
 }
 
 func (h *OCIRegistryHandler) handlePing(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta) {
@@ -87,6 +135,14 @@ func (h *OCIRegistryHandler) handlePing(w http.ResponseWriter, r *http.Request, 
 func (h *OCIRegistryHandler) handleBlobHead(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
 	var err oci.OCIError
 	err = oci.ErrBlobNotFound
+	ociErr := oci.ToOCI(err)
+	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+	oci.WriteError(w, ociErr)
+}
+
+func (h *OCIRegistryHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
+	var err oci.OCIError
+	err = oci.ErrManifestNotFound
 	ociErr := oci.ToOCI(err)
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 	oci.WriteError(w, ociErr)

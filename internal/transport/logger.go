@@ -120,6 +120,10 @@ func TraceHandler() gin.HandlerFunc {
 			respBodyOut = summarizeBinary(respBody)
 		}
 
+		query := c.Request.URL.RawQuery
+		if query != "" {
+			query = "?" + query
+		}
 		// --- mitmproxy‑style output ---
 		fmt.Printf(
 			"\n%sREQUEST →%s %s%s %s%s\n"+
@@ -130,7 +134,7 @@ func TraceHandler() gin.HandlerFunc {
 				"  %sLatency:%s %s\n"+
 				"  %sHeaders:%s\n%s\n"+
 				"  %sBody:%s %s\n\n",
-			cBlue, cReset, cCyan, c.Request.Method, cReset, " "+c.Request.URL.Path,
+			cBlue, cReset, cCyan, c.Request.Method, cReset, " "+c.Request.URL.Path+query,
 			cBold, cReset, strings.Join(reqHeaders, "\n"),
 			cBold, cReset, cYellow+reqBodyOut+cReset,
 

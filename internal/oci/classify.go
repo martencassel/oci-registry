@@ -1,34 +1,14 @@
 package oci
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
 // ErrNotOCI
 var ErrNotOCI = http.ErrNotSupported
-
-type Kind int
-
-const (
-	KindUnknown Kind = iota
-	KindBlobGet
-	KindBlobHead
-	KindBlobMount
-	KindManifestGet
-	KindManifestHead
-	KindManifestPut
-	KindCatalogList
-	KindPing
-	KindTagsList
-	KindBlobUploadPost
-	KindBlobUploadPatch
-	KindBlobUploadPut
-)
 
 type RequestMeta struct {
 	Kind        Kind
@@ -51,225 +31,8 @@ type ResponseMeta struct {
 	ContentLength int64
 }
 
-func kindFromVerb(method string, meta ParseResult) Kind {
-	switch meta.Verb {
-	case VerbBlobs:
-		if method == http.MethodPut && meta.SubVerb == "uploads" {
-			return KindBlobUploadPut
-		}
-		if meta.SubVerb == "uploads" {
-			return KindBlobUploadPost
-		}
-		return classifyBlob(method)
-	case VerbManifests:
-		return classifyManifest(method)
-	case VerbTags:
-		if method == http.MethodGet && meta.SubVerb == "list" {
-			return KindTagsList
-		}
-	}
-	return KindUnknown
-}
-
-func ClassifyRequest(method, path string) RequestMeta {
-	meta, err := ParseV1(method, path)
-	if err != nil {
-		return RequestMeta{Kind: KindUnknown}
-	}
-
-	return RequestMeta{
-		Kind:       kindFromVerb(method, meta),
-		RepoKey:    meta.RepoKey,
-		Repository: meta.Repository,
-		Verb:       meta.Verb,
-		SubVerb:    meta.SubVerb,
-		Digest:     meta.Digest,
-		Reference:  meta.Reference,
-		UploadUUID: meta.UploadUUID,
-		Query:      meta.Query,
-		RawPath:    meta.RawPath,
-	}
-}
-
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && s[len(s)-len(substr):] == substr
-}
-
-// ErrUnknown
-var ErrUnknown = fmt.Errorf("unknown request")
-
-func ParseV1(method, path string) (ParseResult, error) {
-	meta := ParseResult{RawPath: path}
-
-	// 1. Ping
-	if path == "/v2/" {
-		return ParseResult{
-			IsPing:  true,
-			RawPath: path,
-		}, nil
-	}
-
-	// 2. Split query
-	var query string
-	if i := strings.Index(path, "?"); i != -1 {
-		query = path[i+1:]
-		path = path[:i]
-	}
-	if query != "" {
-		meta.Query, _ = url.ParseQuery(query)
-	}
-
-	// 3. Must start with /v2/
-	if !strings.HasPrefix(path, "/v2/") {
-		return ParseResult{}, ErrUnknown
-	}
-
-	rest := strings.TrimPrefix(path, "/v2/")
-	segments := strings.Split(rest, "/")
-
-	// Reject empty segments except a single trailing slash
-	for idx, seg := range segments {
-		if seg == "" {
-			// allow exactly one trailing empty segment
-			if idx == len(segments)-1 {
-				continue
-			}
-			return ParseResult{}, ErrUnknown
-		}
-	}
-
-	if len(segments) == 0 {
-		return ParseResult{}, ErrUnknown
-	}
-
-	// Reserved verbs
-	verbs := map[string]VerbType{
-		"blobs":     VerbBlobs,
-		"manifests": VerbManifests,
-		"tags":      VerbTags,
-		"referrers": VerbReferrers,
-		"uploads":   VerbBlobs,
-	}
-
-	// 4. repoKey is ALWAYS the first segment
-	meta.RepoKey = segments[0]
-	i := 1
-
-	// 5. repository continues until verb or special
-	repoParts := []string{}
-	for ; i < len(segments); i++ {
-		seg := segments[i]
-		if _, ok := verbs[seg]; ok {
-			break
-		}
-		if strings.HasPrefix(seg, "_") {
-			break
-		}
-		repoParts = append(repoParts, seg)
-	}
-	meta.Repository = strings.Join(repoParts, "/")
-
-	// 6. special segment
-	if i < len(segments) && strings.HasPrefix(segments[i], "_") {
-		meta.SubVerb = segments[i]
-		i++
-	}
-
-	// 7. verb
-	if i < len(segments) {
-		seg := segments[i]
-		if vt, ok := verbs[seg]; ok {
-			meta.Verb = vt
-
-			tail := segments[i+1:]
-			switch seg {
-			case "blobs":
-				if len(tail) > 0 {
-					if len(tail) > 1 && tail[0] == "uploads" {
-						meta.UploadUUID = tail[1]
-						meta.SubVerb = "uploads"
-					} else if len(tail) == 1 && tail[0] == "uploads" {
-						meta.SubVerb = "uploads"
-					} else {
-						meta.Digest = tail[0]
-					}
-				}
-			case "manifests":
-				if len(tail) > 0 {
-					meta.Reference = tail[0]
-				}
-			case "tags":
-				if len(tail) > 0 && tail[0] == "list" {
-					meta.SubVerb = "list"
-				}
-			case "referrers":
-				if len(tail) > 0 {
-					meta.Reference = tail[0]
-				}
-			}
-		}
-	}
-
-	return meta, nil
-}
-
-func classifyManifest(method string) Kind {
-	switch method {
-	case http.MethodGet:
-		return KindManifestGet
-	case http.MethodHead:
-		return KindManifestHead
-	case http.MethodPut:
-		return KindManifestPut
-	}
-	return KindUnknown
-}
-
-func summarizeBinary(body []byte) string {
-	h := sha256.Sum256(body)
-	return fmt.Sprintf("<binary %d bytes, sha256=%s>", len(body), hex.EncodeToString(h[:]))
-}
-
-func ParseAndClassify(method string, url *url.URL) (RequestMeta, error) {
-	parsed, err := ParseV1(method, url.Path)
-	if err != nil {
-		return RequestMeta{}, err
-	}
-
-	// Convert ParseResult → RequestMeta
-	meta := RequestMeta{
-		RepoKey:     parsed.RepoKey,
-		Repository:  parsed.Repository,
-		Verb:        parsed.Verb,
-		SubVerb:     parsed.SubVerb,
-		Digest:      parsed.Digest,
-		Reference:   parsed.Reference,
-		UploadUUID:  parsed.UploadUUID,
-		Query:       parsed.Query,
-		RawPath:     parsed.RawPath,
-		IsDigestRef: strings.HasPrefix(parsed.Reference, "sha256:"),
-	}
-
-	// Compute Kind
-	meta.Kind = kindFromVerb(method, parsed)
-
-	return meta, nil
-}
-
-func classifyBlob(method string) Kind {
-	switch method {
-	case http.MethodGet:
-		return KindBlobGet
-	case http.MethodHead:
-		return KindBlobHead
-	case http.MethodPost:
-		return KindBlobMount
-	case http.MethodPatch:
-		return KindBlobUploadPatch
-	case http.MethodPut:
-		return KindBlobUploadPut
-	}
-	return KindUnknown
 }
 
 func ExtractRepoKey(path string) (repoKey string, remainder string, ok bool) {
@@ -315,4 +78,252 @@ type ParseResult struct {
 
 	// Raw
 	RawPath string
+}
+
+type Kind int
+
+func (k Kind) String() string {
+	switch k {
+	case KindUnknown:
+		return "Unknown"
+	case KindPing:
+		return "Ping"
+	case KindDownloadBlob:
+		return "DownloadBlob"
+	case KindCheckBlobExists:
+		return "CheckBlobExists"
+	case KindGetManifest:
+		return "GetManifest"
+	case KindCheckManifestExists:
+		return "CheckManifestExists"
+	case KindStartBlobUpload:
+		return "StartBlobUpload"
+	case KindMonolithicBlobUpload:
+		return "MonolithicBlobUpload"
+	case KindUploadBlobChunk:
+		return "UploadBlobChunk"
+	case KindCompleteBlobUpload:
+		return "CompleteBlobUpload"
+	case KindCancelBlobUpload:
+		return "CancelBlobUpload"
+	case KindGetUploadStatus:
+		return "GetUploadStatus"
+	case KindMountBlob:
+		return "MountBlob"
+	case KindGetBlobUpload:
+		return "GetBlobUpload"
+	case KindUploadManifest:
+		return "UploadManifest"
+	case KindDeleteBlobUpload:
+		return "DeleteBlobUpload"
+	case KindListTags:
+		return "ListTags"
+	case KindListTagsPaginated:
+		return "ListTagsPaginated"
+	case KindListReferrers:
+		return "ListReferrers"
+	default:
+		return "Unknown"
+	}
+}
+
+const (
+	KindUnknown Kind = iota
+
+	// Meta
+	KindPing
+
+	// Blob Pull
+	KindDownloadBlob
+	KindCheckBlobExists
+
+	// Manifest Pull
+	KindGetManifest
+	KindCheckManifestExists
+
+	// Blob Upload
+	KindStartBlobUpload
+	KindMonolithicBlobUpload
+	KindUploadBlobChunk
+	KindCompleteBlobUpload
+	KindCancelBlobUpload
+	KindGetUploadStatus
+	KindMountBlob
+	KindGetBlobUpload
+
+	// Manifest Push
+	KindUploadManifest
+	KindDeleteBlobUpload
+
+	// Tag Discovery
+	KindListTags
+	KindListTagsPaginated
+
+	// Referrers API
+	KindListReferrers
+)
+
+func ClassifyRequest(method, path string, req *http.Request) RequestMeta {
+	// 1. Ping
+	if method == "GET" && path == "/v2/" {
+		return RequestMeta{Kind: KindPing}
+	}
+
+	// 2. Blob existence / download
+	if repoKey, name, digest, ok := parseBlobPath(path); ok {
+		switch method {
+		case "GET":
+			return RequestMeta{Kind: KindDownloadBlob, RepoKey: repoKey, Repository: name, Digest: digest}
+		case "HEAD":
+			return RequestMeta{Kind: KindCheckBlobExists, RepoKey: repoKey, Repository: name, Digest: digest}
+		}
+	}
+
+	// 3. Manifest existence / download
+	if repoKey, name, reference, ok := parseManifestPath(path); ok {
+		switch method {
+		case "GET":
+			return RequestMeta{Kind: KindGetManifest, RepoKey: repoKey, Repository: name, Reference: reference}
+		case "HEAD":
+			return RequestMeta{Kind: KindCheckManifestExists, RepoKey: repoKey, Repository: name, Reference: reference}
+		case "PUT":
+			return RequestMeta{Kind: KindUploadManifest, RepoKey: repoKey, Repository: name, Reference: reference}
+		}
+	}
+
+	// 4. Blob upload lifecycle (POST / PATCH / PUT / GET / DELETE)
+	if repoKey, name, uploadUUID, digest, mount, from, ok := parseBlobUploadPath(req); ok {
+		switch method {
+
+		case "POST":
+			if mount != "" && from != "" {
+				return RequestMeta{Kind: KindMountBlob, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
+			}
+			if digest != "" && uploadUUID == "" {
+				return RequestMeta{Kind: KindMonolithicBlobUpload, RepoKey: repoKey, Repository: name, Digest: digest}
+			}
+			return RequestMeta{Kind: KindStartBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
+
+		case "PATCH":
+			if uploadUUID != "" {
+				return RequestMeta{Kind: KindUploadBlobChunk, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
+			}
+
+		case "PUT":
+			if uploadUUID != "" && digest != "" {
+				return RequestMeta{Kind: KindCompleteBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
+			}
+
+		case "GET":
+			if uploadUUID != "" {
+				return RequestMeta{Kind: KindGetUploadStatus, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
+			}
+
+		case "DELETE":
+			if uploadUUID != "" {
+				return RequestMeta{Kind: KindCancelBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
+			}
+		}
+	}
+
+	// 5. Tag listing
+	if repoKey, name, ok := parseTagsListPath(req); ok {
+		if method == "GET" {
+			if req.URL.Query().Has("n") || req.URL.Query().Has("last") {
+				return RequestMeta{Kind: KindListTagsPaginated, RepoKey: repoKey, Repository: name}
+			}
+			return RequestMeta{Kind: KindListTags, RepoKey: repoKey, Repository: name}
+		}
+	}
+
+	// 6. Referrers API
+	if repoKey, name, reference, ok := parseReferrersPath(path); ok {
+		if method == "GET" {
+			return RequestMeta{Kind: KindListReferrers, RepoKey: repoKey, Repository: name, Reference: reference}
+		}
+	}
+	return RequestMeta{Kind: KindUnknown}
+}
+
+var blobPathRE = regexp.MustCompile(`^/v2/([^/]+)/(.+?)/blobs/([^/]+)$`)
+
+func parseBlobPath(path string) (repoKey string, name string, digest string, ok bool) {
+	matches := blobPathRE.FindStringSubmatch(path)
+	if len(matches) != 4 {
+		return "", "", "", false
+	}
+	repoKey = matches[1]
+	name = matches[2]
+	digest = matches[3]
+	ok = true
+	return repoKey, name, digest, ok
+}
+
+var manifestPathRE = regexp.MustCompile(`^/v2/([^/]+)/(.+?)/manifests/([^/]+)$`)
+
+func parseManifestPath(path string) (repoKey string, name string, reference string, ok bool) {
+	matches := manifestPathRE.FindStringSubmatch(path)
+	if len(matches) != 4 {
+		return "", "", "", false
+	}
+	repoKey = matches[1]
+	name = matches[2]
+	reference = matches[3]
+	ok = true
+	return repoKey, name, reference, ok
+}
+
+// /v2/<repoKey>/<name>/blobs/uploads
+// /v2/<repoKey>/<name>/blobs/uploads/
+// /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>
+// /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>?digest=<digest>
+var blobUploadPathRE = regexp.MustCompile(
+	`^/v2/([^/]+)/(.+?)/blobs/uploads` +
+		`(?:/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}))?` +
+		`/?$`,
+)
+
+func parseBlobUploadPath(req *http.Request) (repoKey, name, uploadUUID, digest, mount, from string, ok bool) {
+	matches := blobUploadPathRE.FindStringSubmatch(req.URL.Path)
+	if len(matches) != 4 {
+		return "", "", "", "", "", "", false
+	}
+
+	repoKey = matches[1]
+	name = matches[2]
+	uploadUUID = matches[3]
+
+	q := req.URL.Query()
+
+	digest = q.Get("digest")
+	mount = q.Get("mount")
+	from = q.Get("from")
+
+	return repoKey, name, uploadUUID, digest, mount, from, true
+}
+
+var tagsListPathRE = regexp.MustCompile(
+	`^/v2/([^/]+)/(.+?)/tags/list(?:\?.*)?$`,
+)
+
+func parseTagsListPath(req *http.Request) (repoKey, name string, ok bool) {
+	matches := tagsListPathRE.FindStringSubmatch(req.URL.Path)
+	if len(matches) != 3 {
+		return "", "", false
+	}
+	return matches[1], matches[2], true
+}
+
+var referrersPathRE = regexp.MustCompile(`^/v2/([^/]+)/(.+?)/referrers/([^/]+)$`)
+
+func parseReferrersPath(path string) (repoKey string, name string, reference string, ok bool) {
+	matches := referrersPathRE.FindStringSubmatch(path)
+	if len(matches) != 4 {
+		return "", "", "", false
+	}
+	repoKey = matches[1]
+	name = matches[2]
+	reference = matches[3]
+	ok = true
+	return repoKey, name, reference, ok
 }
