@@ -228,12 +228,7 @@ func (h *OCIRegistryHandler) handleBlobUploadPut(w http.ResponseWriter, r *http.
 		http.Error(w, "failed to finalize upload session", http.StatusInternalServerError)
 		return
 	}
-	err = h.Uploads.WriteChunk(id, r.Body)
-	if err != nil {
-		log.Errorf("Failed to write chunk to upload session: %v", err)
-		http.Error(w, "failed to write chunk to upload session", http.StatusInternalServerError)
-		return
-	}
+
 	// For now, just return 201 Created with Location header pointing to the blob URL
 	w.WriteHeader(http.StatusCreated)
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/%s", meta.RepoKey, digestQuery))

@@ -154,6 +154,7 @@ const (
 	// Manifest Push
 	KindUploadManifest
 	KindDeleteBlobUpload
+	KindDeleteManifest
 
 	// Tag Discovery
 	KindListTags
@@ -163,89 +164,121 @@ const (
 	KindListReferrers
 )
 
+func checkBlob(method string, path string) (RequestMeta, bool) {
+	if repoKey, name, digest, ok := parseBlobPath(path); ok {
+		switch method {
+		case "GET":
+			return RequestMeta{Kind: KindDownloadBlob, RepoKey: repoKey, Repository: name, Digest: digest}, true
+		case "HEAD":
+			return RequestMeta{Kind: KindCheckBlobExists, RepoKey: repoKey, Repository: name, Digest: digest}, true
+		}
+	}
+	return RequestMeta{}, false
+}
+
+func checkManifest(method string, path string) (RequestMeta, bool) {
+	if repoKey, name, reference, ok := parseManifestPath(path); ok {
+		switch method {
+		case "GET":
+			return RequestMeta{Kind: KindGetManifest, RepoKey: repoKey, Repository: name, Reference: reference}, true
+		case "HEAD":
+			return RequestMeta{Kind: KindCheckManifestExists, RepoKey: repoKey, Repository: name, Reference: reference}, true
+		case "PUT":
+			return RequestMeta{Kind: KindUploadManifest, RepoKey: repoKey, Repository: name, Reference: reference}, true
+		}
+	}
+	return RequestMeta{}, false
+}
+
+func checkBlobUpload(method string, req *http.Request) (RequestMeta, bool) {
+	if repoKey, name, uploadUUID, digest, mount, from, ok := parseBlobUploadPath(req); ok {
+		switch method {
+		case "POST":
+			if mount != "" && from != "" {
+				return RequestMeta{Kind: KindMountBlob, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+			}
+			if digest != "" && uploadUUID == "" {
+				return RequestMeta{Kind: KindMonolithicBlobUpload, RepoKey: repoKey, Repository: name, Digest: digest}, true
+			}
+			return RequestMeta{Kind: KindStartBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+
+		case "PATCH":
+			if uploadUUID != "" {
+				return RequestMeta{Kind: KindUploadBlobChunk, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+			}
+
+		case "PUT":
+			if uploadUUID != "" && digest != "" {
+				return RequestMeta{Kind: KindCompleteBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+			}
+
+		case "GET":
+			if uploadUUID != "" {
+				return RequestMeta{Kind: KindGetUploadStatus, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+			}
+
+		case "DELETE":
+			if uploadUUID != "" {
+				return RequestMeta{Kind: KindCancelBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+			}
+		}
+	}
+	return RequestMeta{}, false
+}
+
+func checkTagsList(method string, req *http.Request) (RequestMeta, bool) {
+	if repoKey, name, ok := parseTagsListPath(req); ok {
+		switch method {
+		case "GET":
+			if req.URL.Query().Has("n") || req.URL.Query().Has("last") {
+				return RequestMeta{Kind: KindListTagsPaginated, RepoKey: repoKey, Repository: name}, true
+			}
+			return RequestMeta{Kind: KindListTags, RepoKey: repoKey, Repository: name}, true
+		}
+	}
+	return RequestMeta{}, false
+}
+
+func checkReferrers(method string, path string) (RequestMeta, bool) {
+	if repoKey, name, reference, ok := parseReferrersPath(path); ok {
+		switch method {
+		case "GET":
+			return RequestMeta{Kind: KindListReferrers, RepoKey: repoKey, Repository: name, Reference: reference}, true
+		}
+	}
+	return RequestMeta{}, false
+}
+
 func ClassifyRequest(method, path string, req *http.Request) RequestMeta {
 	// 1. Ping
 	if method == "GET" && path == "/v2/" {
 		return RequestMeta{Kind: KindPing}
 	}
-
 	// 2. Blob existence / download
-	if repoKey, name, digest, ok := parseBlobPath(path); ok {
-		switch method {
-		case "GET":
-			return RequestMeta{Kind: KindDownloadBlob, RepoKey: repoKey, Repository: name, Digest: digest}
-		case "HEAD":
-			return RequestMeta{Kind: KindCheckBlobExists, RepoKey: repoKey, Repository: name, Digest: digest}
-		}
+	if meta, ok := checkBlob(method, path); ok {
+		return meta
 	}
-
 	// 3. Manifest existence / download
-	if repoKey, name, reference, ok := parseManifestPath(path); ok {
-		switch method {
-		case "GET":
-			return RequestMeta{Kind: KindGetManifest, RepoKey: repoKey, Repository: name, Reference: reference}
-		case "HEAD":
-			return RequestMeta{Kind: KindCheckManifestExists, RepoKey: repoKey, Repository: name, Reference: reference}
-		case "PUT":
-			return RequestMeta{Kind: KindUploadManifest, RepoKey: repoKey, Repository: name, Reference: reference}
-		}
+	if meta, ok := checkManifest(method, path); ok {
+		return meta
 	}
 
-	// 4. Blob upload lifecycle (POST / PATCH / PUT / GET / DELETE)
-	if repoKey, name, uploadUUID, digest, mount, from, ok := parseBlobUploadPath(req); ok {
-		switch method {
-
-		case "POST":
-			if mount != "" && from != "" {
-				return RequestMeta{Kind: KindMountBlob, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
-			}
-			if digest != "" && uploadUUID == "" {
-				return RequestMeta{Kind: KindMonolithicBlobUpload, RepoKey: repoKey, Repository: name, Digest: digest}
-			}
-			return RequestMeta{Kind: KindStartBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
-
-		case "PATCH":
-			if uploadUUID != "" {
-				return RequestMeta{Kind: KindUploadBlobChunk, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
-			}
-
-		case "PUT":
-			if uploadUUID != "" && digest != "" {
-				return RequestMeta{Kind: KindCompleteBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
-			}
-
-		case "GET":
-			if uploadUUID != "" {
-				return RequestMeta{Kind: KindGetUploadStatus, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
-			}
-
-		case "DELETE":
-			if uploadUUID != "" {
-				return RequestMeta{Kind: KindCancelBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}
-			}
-		}
+	if meta, ok := checkBlobUpload(method, req); ok {
+		return meta
 	}
 
-	// 5. Tag listing
-	if repoKey, name, ok := parseTagsListPath(req); ok {
-		if method == "GET" {
-			if req.URL.Query().Has("n") || req.URL.Query().Has("last") {
-				return RequestMeta{Kind: KindListTagsPaginated, RepoKey: repoKey, Repository: name}
-			}
-			return RequestMeta{Kind: KindListTags, RepoKey: repoKey, Repository: name}
-		}
+	if meta, ok := checkTagsList(method, req); ok {
+		return meta
 	}
 
-	// 6. Referrers API
-	if repoKey, name, reference, ok := parseReferrersPath(path); ok {
-		if method == "GET" {
-			return RequestMeta{Kind: KindListReferrers, RepoKey: repoKey, Repository: name, Reference: reference}
-		}
+	if meta, ok := checkReferrers(method, path); ok {
+		return meta
 	}
+
 	return RequestMeta{Kind: KindUnknown}
 }
 
-var blobPathRE = regexp.MustCompile(`^/v2/([^/]+)/(.+?)/blobs/([^/]+)$`)
+var blobPathRE = regexp.MustCompile(`^/v2/([^/]+)/(.+)/blobs/([^/]+)$`)
 
 func parseBlobPath(path string) (repoKey string, name string, digest string, ok bool) {
 	matches := blobPathRE.FindStringSubmatch(path)
@@ -278,7 +311,7 @@ func parseManifestPath(path string) (repoKey string, name string, reference stri
 // /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>
 // /v2/<repoKey>/<name>/blobs/uploads/<uploadUUID>?digest=<digest>
 var blobUploadPathRE = regexp.MustCompile(
-	`^/v2/([^/]+)/(.+?)/blobs/uploads` +
+	`^/v2/([^/]+)(?:/(.+?))?/blobs/uploads` +
 		`(?:/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}))?` +
 		`/?$`,
 )
