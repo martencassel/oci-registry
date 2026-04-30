@@ -9,9 +9,21 @@ func checkBlob(method string, path string) (RequestMeta, bool) {
 	if repoKey, name, digest, ok := parseBlobPath(path); ok {
 		switch method {
 		case "GET":
-			return RequestMeta{Kind: KindDownloadBlob, RepoKey: repoKey, Repository: name, Digest: digest}, true
+			return RequestMeta{
+				Verb:       VerbBlobs,
+				Kind:       KindDownloadBlob,
+				RepoKey:    repoKey,
+				Repository: name,
+				Digest:     digest,
+			}, true
 		case "HEAD":
-			return RequestMeta{Kind: KindCheckBlobExists, RepoKey: repoKey, Repository: name, Digest: digest}, true
+			return RequestMeta{
+				Verb:       VerbBlobs,
+				Kind:       KindCheckBlobExists,
+				RepoKey:    repoKey,
+				Repository: name,
+				Digest:     digest,
+			}, true
 		}
 	}
 	return RequestMeta{}, false
@@ -21,11 +33,29 @@ func checkManifest(method string, path string) (RequestMeta, bool) {
 	if repoKey, name, reference, ok := parseManifestPath(path); ok {
 		switch method {
 		case "GET":
-			return RequestMeta{Kind: KindGetManifest, RepoKey: repoKey, Repository: name, Reference: reference}, true
+			return RequestMeta{
+				Verb:       VerbManifests,
+				Kind:       KindGetManifest,
+				RepoKey:    repoKey,
+				Repository: name,
+				Reference:  reference,
+			}, true
 		case "HEAD":
-			return RequestMeta{Kind: KindCheckManifestExists, RepoKey: repoKey, Repository: name, Reference: reference}, true
+			return RequestMeta{
+					Verb:       VerbManifests,
+					Kind:       KindCheckManifestExists,
+					RepoKey:    repoKey,
+					Repository: name,
+					Reference:  reference},
+				true
 		case "PUT":
-			return RequestMeta{Kind: KindUploadManifest, RepoKey: repoKey, Repository: name, Reference: reference}, true
+			return RequestMeta{
+					Verb:       VerbManifests,
+					Kind:       KindUploadManifest,
+					RepoKey:    repoKey,
+					Repository: name,
+					Reference:  reference},
+				true
 		}
 	}
 	return RequestMeta{}, false
@@ -36,31 +66,80 @@ func checkBlobUpload(method string, req *http.Request) (RequestMeta, bool) {
 		switch method {
 		case "POST":
 			if mount != "" && from != "" {
-				return RequestMeta{Kind: KindMountBlob, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+				return RequestMeta{
+					Verb:       VerbBlobs,
+					Kind:       KindMountBlob,
+					RepoKey:    repoKey,
+					Repository: name,
+					UploadUUID: uploadUUID,
+					Digest:     digest,
+				}, true
 			}
 			if digest != "" && uploadUUID == "" {
-				return RequestMeta{Kind: KindMonolithicBlobUpload, RepoKey: repoKey, Repository: name, Digest: digest}, true
+				return RequestMeta{
+						Verb:       VerbBlobs,
+						Kind:       KindMonolithicBlobUpload,
+						RepoKey:    repoKey,
+						Repository: name,
+						Digest:     digest,
+					},
+					true
 			}
-			return RequestMeta{Kind: KindStartBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+			return RequestMeta{
+				Verb:       VerbBlobs,
+				Kind:       KindStartBlobUpload,
+				RepoKey:    repoKey,
+				Repository: name,
+				UploadUUID: uploadUUID,
+				Digest:     digest,
+			}, true
 
 		case "PATCH":
 			if uploadUUID != "" {
-				return RequestMeta{Kind: KindUploadBlobChunk, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+				return RequestMeta{
+					Verb:       VerbBlobs,
+					Kind:       KindUploadBlobChunk,
+					RepoKey:    repoKey,
+					Repository: name,
+					UploadUUID: uploadUUID,
+					Digest:     digest,
+				}, true
 			}
 
 		case "PUT":
 			if uploadUUID != "" && digest != "" {
-				return RequestMeta{Kind: KindCompleteBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+				return RequestMeta{
+					Verb:       VerbBlobs,
+					Kind:       KindCompleteBlobUpload,
+					RepoKey:    repoKey,
+					Repository: name,
+					UploadUUID: uploadUUID,
+					Digest:     digest,
+				}, true
 			}
 
 		case "GET":
 			if uploadUUID != "" {
-				return RequestMeta{Kind: KindGetUploadStatus, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+				return RequestMeta{
+					Verb:       VerbBlobs,
+					Kind:       KindGetUploadStatus,
+					RepoKey:    repoKey,
+					Repository: name,
+					UploadUUID: uploadUUID,
+					Digest:     digest,
+				}, true
 			}
 
 		case "DELETE":
 			if uploadUUID != "" {
-				return RequestMeta{Kind: KindCancelBlobUpload, RepoKey: repoKey, Repository: name, UploadUUID: uploadUUID, Digest: digest}, true
+				return RequestMeta{
+					Verb:       VerbBlobs,
+					Kind:       KindCancelBlobUpload,
+					RepoKey:    repoKey,
+					Repository: name,
+					UploadUUID: uploadUUID,
+					Digest:     digest,
+				}, true
 			}
 		}
 	}
@@ -72,9 +151,17 @@ func checkTagsList(method string, req *http.Request) (RequestMeta, bool) {
 		switch method {
 		case "GET":
 			if req.URL.Query().Has("n") || req.URL.Query().Has("last") {
-				return RequestMeta{Kind: KindListTagsPaginated, RepoKey: repoKey, Repository: name}, true
+				return RequestMeta{
+					Kind:       KindListTagsPaginated,
+					RepoKey:    repoKey,
+					Repository: name,
+				}, true
 			}
-			return RequestMeta{Kind: KindListTags, RepoKey: repoKey, Repository: name}, true
+			return RequestMeta{
+				Kind:       KindListTags,
+				RepoKey:    repoKey,
+				Repository: name,
+			}, true
 		}
 	}
 	return RequestMeta{}, false
@@ -84,7 +171,12 @@ func checkReferrers(method string, path string) (RequestMeta, bool) {
 	if repoKey, name, reference, ok := parseReferrersPath(path); ok {
 		switch method {
 		case "GET":
-			return RequestMeta{Kind: KindListReferrers, RepoKey: repoKey, Repository: name, Reference: reference}, true
+			return RequestMeta{
+				Kind:       KindListReferrers,
+				RepoKey:    repoKey,
+				Repository: name,
+				Reference:  reference,
+			}, true
 		}
 	}
 	return RequestMeta{}, false

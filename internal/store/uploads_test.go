@@ -54,7 +54,7 @@ func TestUploads(t *testing.T) {
 	}
 
 	// Verify blob is in blob store
-	has, err := blobs.Has(nil, chunkDataDgst)
+	has, _, err := blobs.Has(nil, chunkDataDgst)
 	if err != nil {
 		t.Fatalf("BlobStore Has failed: %v", err)
 	}

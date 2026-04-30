@@ -152,9 +152,22 @@ func (s *ManifestStore) PathForRecord(record MetadataRecord) string {
 	return s.manifestPath(record.RepoKey, record.RepoName, record.Reference)
 }
 
+func (s *ManifestStore) ExistsManifest(repoKey, repoName, reference string) (bool, int64, error) {
+	manifestPath := s.manifestPath(repoKey, repoName, reference)
+	info, err := os.Stat(manifestPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, 0, fmt.Errorf("manifest not found")
+		}
+		return false, 0, fmt.Errorf("failed to read manifest: %w", err)
+	}
+	if info.IsDir() {
+		return false, 0, fmt.Errorf("path is a directory")
+	}
+	return true, info.Size(), nil
+}
 func (s *ManifestStore) GetManifest(repoKey, repoName, reference string) ([]byte, error) {
 	manifestPath := s.manifestPath(repoKey, repoName, reference)
-
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+
+IP_ADDR="172.21.22.151"
+PORT="9090"
+NIC="eth0"
+
+ensure_ip() {
+    ip addr show "$NIC" | grep -q "$IP_ADDR" \
+        || sudo -E ipmgr add "$IP_ADDR" --iface "$NIC"
+}
+
+restart_mitmproxy() {
+    pkill -x mitmproxy 2>/dev/null || true
+    exec mitmproxy --listen-host "$IP_ADDR" -p "$PORT"
+}
+
+ensure_ip
+restart_mitmproxy

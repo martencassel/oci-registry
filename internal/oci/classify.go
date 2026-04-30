@@ -15,7 +15,6 @@ type RequestMeta struct {
 	Verb        VerbType
 	Repository  string
 	SubVerb     string
-	Repo        string
 	Digest      string
 	Reference   string
 	IsDigestRef bool

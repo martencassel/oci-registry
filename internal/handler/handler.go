@@ -10,6 +10,7 @@ import (
 	config "github.com/martencassel/oci-registry/internal/config"
 	"github.com/martencassel/oci-registry/internal/oci"
 	"github.com/martencassel/oci-registry/internal/store"
+	"github.com/opencontainers/go-digest"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -133,27 +134,55 @@ func (h *OCIRegistryHandler) handlePing(w http.ResponseWriter, r *http.Request, 
 }
 
 func (h *OCIRegistryHandler) handleBlobHead(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
-	var err oci.OCIError
-	err = oci.ErrBlobNotFound
-	ociErr := oci.ToOCI(err)
+	ok, n, err := h.Uploads.Blobs.Has(r.Context(), digest.Digest(meta.Digest))
+	if err != nil {
+		var err oci.OCIError
+		ociErr := oci.ToOCI(err)
+		w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		oci.WriteError(w, ociErr)
+	}
+	if !ok {
+		var err oci.OCIError
+		err = oci.ErrBlobNotFound
+		ociErr := oci.ToOCI(err)
+		w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		oci.WriteError(w, ociErr)
+	}
+	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	oci.WriteError(w, ociErr)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", n))
+	w.Header().Set("Docker-Content-Digest", meta.Digest)
 }
 
 func (h *OCIRegistryHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
-	var err oci.OCIError
-	err = oci.ErrManifestNotFound
-	ociErr := oci.ToOCI(err)
+
+	manifest, err := h.ManifestStore.GetManifest(meta.RepoKey, meta.Repository, meta.Reference)
+	if err != nil {
+		ociErr := oci.ToOCI(err)
+		oci.WriteError(w, ociErr)
+		w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	log.Info(manifest)
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	oci.WriteError(w, ociErr)
+	w.Write(manifest)
 }
 
 func (h *OCIRegistryHandler) handleManifestHead(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
-	var err oci.OCIError
-	err = oci.ErrManifestNotFound
-	ociErr := oci.ToOCI(err)
+	_, n, err := h.ManifestStore.ExistsManifest(meta.RepoKey, meta.Repository, meta.Reference)
+	if err != nil {
+		var err oci.OCIError
+		err = oci.ErrManifestNotFound
+		ociErr := oci.ToOCI(err)
+		w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		oci.WriteError(w, ociErr)
+	}
+	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	oci.WriteError(w, ociErr)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", n))
+	w.Header().Set("Docker-Content-Digest", meta.Digest)
+
 }
 
 // POST /v2/oci-local/alpine/blobs/uploads/

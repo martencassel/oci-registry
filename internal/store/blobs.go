@@ -13,7 +13,7 @@ import (
 )
 
 type BlobStore interface {
-	Has(ctx context.Context, dgst digest.Digest) (bool, error)
+	Has(ctx context.Context, dgst digest.Digest) (bool, int64, error)
 	Get(ctx context.Context, dgst digest.Digest) (io.ReadCloser, error)
 	Put(ctx context.Context, dgst digest.Digest, r io.Reader) error
 
@@ -34,15 +34,16 @@ func (s *FSBlobStore) blobPath(dgst digest.Digest) string {
 	return filepath.Join(s.root, "blobs", algo, hex[:2], hex)
 }
 
-func (s *FSBlobStore) Has(ctx context.Context, dgst digest.Digest) (bool, error) {
-	_, err := os.Stat(s.blobPath(dgst))
+func (s *FSBlobStore) Has(ctx context.Context, dgst digest.Digest) (bool, int64, error) {
+	info, err := os.Stat(s.blobPath(dgst))
 	if err == nil {
-		return true, nil
+		info.Size()
+		return true, info.Size(), nil
 	}
 	if os.IsNotExist(err) {
-		return false, nil
+		return false, 0, nil
 	}
-	return false, err
+	return false, 0, err
 }
 
 func (s *FSBlobStore) Get(ctx context.Context, dgst digest.Digest) (io.ReadCloser, error) {
