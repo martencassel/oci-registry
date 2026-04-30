@@ -118,11 +118,19 @@ func (h *OCIRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleDownloadBlob
 func (h *OCIRegistryHandler) handleDownloadBlob(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
-	var err oci.OCIError
-	err = oci.ErrBlobNotFound
-	ociErr := oci.ToOCI(err)
+	reader, err := h.Uploads.Blobs.Get(r.Context(), digest.Digest(meta.Digest))
+	if err != nil {
+		var err oci.OCIError
+		err = oci.ErrBlobNotFound
+		ociErr := oci.ToOCI(err)
+		w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		oci.WriteError(w, ociErr)
+	}
+	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	oci.WriteError(w, ociErr)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	b, err := io.ReadAll(reader)
+	w.Write(b)
 }
 
 func (h *OCIRegistryHandler) handlePing(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta) {
@@ -155,7 +163,6 @@ func (h *OCIRegistryHandler) handleBlobHead(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *OCIRegistryHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, meta oci.RequestMeta, cfg *config.RepoConfig) {
-
 	manifest, err := h.ManifestStore.GetManifest(meta.RepoKey, meta.Repository, meta.Reference)
 	if err != nil {
 		ociErr := oci.ToOCI(err)
@@ -166,6 +173,7 @@ func (h *OCIRegistryHandler) handleGetManifest(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusOK)
 	log.Info(manifest)
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+	w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
 	w.Write(manifest)
 }
 
